@@ -1,4 +1,4 @@
-# Ninebot BLE-MQTT Bridge for Home Assistant
+# Ninebot BLE to MQTT Bridge for Home Assistant
 
 Connect your Ninebot/Segway scooter to Home Assistant via BLE and MQTT.
 
