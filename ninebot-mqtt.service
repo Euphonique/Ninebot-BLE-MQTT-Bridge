@@ -1,0 +1,15 @@
+[Unit]
+Description=Ninebot Max G3 BLE to MQTT Bridge
+After=network-online.target bluetooth.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pihole
+WorkingDirectory=/home/pihole/ninebot_ble
+ExecStart=/home/pihole/ninebot_ble/venv/bin/python /home/pihole/ninebot_ble/ninebot_mqtt.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

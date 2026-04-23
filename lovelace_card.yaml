@@ -1,0 +1,146 @@
+type: custom:vehicle-status-card
+name: Ninebot Max G3
+images:
+  - image: /api/image/serve/01a38a82ff9eda41d2c8acac6a10ba57/original
+layout_config:
+  button_grid:
+    rows: 2
+    columns: 2
+    swipe: false
+  images_swipe:
+    height: 150
+  section_order:
+    - images
+    - range_info
+    - indicators
+  range_info_config:
+    layout: row
+  hide_card_name: false
+  single_tire_card:
+    enabled: false
+  theme_config:
+    theme: Frosted Glass Dark
+  custom_background: {}
+indicator_rows:
+  - row_items:
+      - type: entity
+        show_name: true
+        show_state: true
+        show_icon: true
+        show_entity_picture: false
+        include_state_template: false
+        tap_action:
+          action: more-info
+        entity: sensor.ninebot_max_g3_battery_current
+        name: Current
+      - type: entity
+        show_name: true
+        show_state: true
+        show_icon: true
+        show_entity_picture: false
+        include_state_template: false
+        tap_action:
+          action: more-info
+        entity: sensor.ninebot_max_g3_battery_voltage
+        name: Voltage
+      - type: entity
+        show_name: true
+        show_state: true
+        show_icon: true
+        show_entity_picture: false
+        include_state_template: false
+        tap_action:
+          action: more-info
+        entity: sensor.ninebot_max_g3_charge_cycles
+        name: Cycles
+      - type: entity
+        show_name: true
+        show_state: true
+        show_icon: true
+        show_entity_picture: false
+        include_state_template: false
+        tap_action:
+          action: more-info
+        entity: sensor.ninebot_max_g3_gear_mode
+        name: Mode
+  - row_items:
+      - type: entity
+        show_name: true
+        show_state: true
+        show_icon: true
+        show_entity_picture: false
+        include_state_template: false
+        tap_action:
+          action: more-info
+        entity: sensor.ninebot_max_g3_total_ride_time
+        name: Total Ride
+      - type: entity
+        show_name: true
+        show_state: true
+        show_icon: true
+        show_entity_picture: false
+        include_state_template: false
+        tap_action:
+          action: more-info
+        entity: sensor.ninebot_max_g3_total_runtime
+        name: Total Time
+      - type: entity
+        show_name: true
+        show_state: true
+        show_icon: true
+        show_entity_picture: false
+        include_state_template: false
+        tap_action:
+          action: more-info
+        entity: sensor.ninebot_max_g3_odometer
+        name: Total Distance
+      - type: entity
+        show_name: true
+        show_state: true
+        show_icon: true
+        show_entity_picture: false
+        include_state_template: false
+        tap_action:
+          action: more-info
+        entity: sensor.ninebot_max_g3_last_update
+        name: Updated
+range_info:
+  - energy_level:
+      entity: sensor.ninebot_max_g3_battery
+      tap_action:
+        action: more-info
+      value_alignment: start
+      value_position: inside
+      hide_icon: false
+      icon_state_color: false
+    range_level:
+      entity: sensor.ninebot_max_g3_range
+      value_position: inside
+      hide_icon: false
+      icon_state_color: false
+    charging_entity: sensor.ninebot_max_g3_charging
+    progress_color: "#75e5c6"
+    color_blocks: false
+    color_thresholds:
+      - value: 0
+        color: "#75e5c6"
+      - value: 25
+        color: "#53dfb8"
+      - value: 50
+        color: "#23bc92"
+      - value: 75
+        color: "#1d9a77"
+    bar_height: 10
+    bar_radius: 6
+button_cards:
+  - entity: sensor.ninebot_max_g3_last_update
+    show_icon: true
+    show_primary: true
+    show_secondary: true
+    layout: horizontal
+    button_type: action
+    tap_action:
+      action: more-info
+    card_type: default
+    icon_type: icon
+    primary_info: name
