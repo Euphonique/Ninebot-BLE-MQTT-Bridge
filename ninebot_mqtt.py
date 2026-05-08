@@ -170,14 +170,16 @@ def setup_mqtt():
 async def cleanup_old_discovery(mqtt_client, current_topics):
     stale = []
 
+    prefix = f"homeassistant/sensor/{SCOOTER_NAME}_"
+
     def on_message(client, userdata, msg):
-        if msg.topic not in current_topics and msg.retain:
+        if msg.topic.startswith(prefix) and msg.topic not in current_topics and msg.retain:
             stale.append(msg.topic)
 
     mqtt_client.on_message = on_message
-    mqtt_client.subscribe(f"homeassistant/sensor/{SCOOTER_NAME}_+/config")
+    mqtt_client.subscribe(f"homeassistant/sensor/+/config")
     await asyncio.sleep(3)
-    mqtt_client.unsubscribe(f"homeassistant/sensor/{SCOOTER_NAME}_+/config")
+    mqtt_client.unsubscribe(f"homeassistant/sensor/+/config")
     mqtt_client.on_message = None
 
     for topic in stale:
