@@ -103,17 +103,32 @@ def save_credentials(serial: str, password: bytes):
     print(f"  Credentials saved!")
 
 
+def _expected_packet_len(header_bytes: bytes) -> int:
+    if len(header_bytes) >= 3:
+        return header_bytes[2] + 13
+    return 0
+
+
 async def receive_response(timeout=5.0):
-    fragments = []
+    buf = bytearray()
     try:
         first = await asyncio.wait_for(response_queue.get(), timeout=timeout)
-        fragments.append(first)
-        await asyncio.sleep(0.2)
-        while not response_queue.empty():
-            fragments.append(response_queue.get_nowait())
+        buf.extend(first)
+        expected = _expected_packet_len(buf)
+        while len(buf) < expected:
+            try:
+                frag = await asyncio.wait_for(response_queue.get(), timeout=0.5)
+                buf.extend(frag)
+            except asyncio.TimeoutError:
+                break
     except asyncio.TimeoutError:
         return None
-    return b"".join(fragments)
+    expected = _expected_packet_len(buf)
+    if len(buf) > expected > 0:
+        remainder = bytes(buf[expected:])
+        response_queue.put_nowait(remainder)
+        return bytes(buf[:expected])
+    return bytes(buf)
 
 
 async def send_and_receive(client, crypto, packet, timeout=5.0):
@@ -190,13 +205,16 @@ async def authenticate(client, device_name):
         if crypto.msg_it == 0:
             crypto.msg_it = 1
     else:
-        # Phase 2: SET_PWD
-        print("\n[Phase 2] SET_PWD...")
-        print("  >>> PRESS THE POWER BUTTON ON YOUR SCOOTER TO CONFIRM! <<<")
-
         # Key for SET_PWD: SHA-1(device_name, auth_param)
         crypto._calc_sha1_key(crypto.name_data, auth_param)
         crypto.ble_data = auth_param
+
+        # Phase 2: SET_PWD
+        print("\n[Phase 2] SET_PWD...")
+        if has_stored_pwd:
+            print("  NOTE: Scooter already has a stored pairing.")
+            print("  The display may NOT show a pairing prompt — press the button anyway!")
+        print("  >>> PRESS THE POWER BUTTON ON YOUR SCOOTER NOW! <<<")
 
         password = generate_password(auth_param)
         set_pwd = build_packet(HOST, BLE_BOARD, CMD_SET_PWD, 0x00, password)
@@ -205,6 +223,16 @@ async def authenticate(client, device_name):
         accepted = False
         for attempt in range(30):
             resp = await send_and_receive(client, crypto, set_pwd, timeout=2.0)
+
+            # Also check if a queued response (from packet splitting) is the acceptance
+            if not resp or (len(resp) > 6 and resp[5] == CMD_SET_PWD and resp[6] != 0x01):
+                if not response_queue.empty():
+                    queued = response_queue.get_nowait()
+                    decrypted = crypto.decrypt(queued)
+                    print(f"    [QUEUED {len(decrypted)}b]: {decrypted.hex()}")
+                    if len(decrypted) > 6 and decrypted[5] == CMD_SET_PWD and decrypted[6] == 0x01:
+                        resp = decrypted
+
             if resp and len(resp) > 6 and resp[5] == CMD_SET_PWD:
                 if resp[6] == 0x01:
                     print("  Password ACCEPTED!")
@@ -219,7 +247,12 @@ async def authenticate(client, device_name):
                     print(f"  Polling... ({attempt + 1}/30)")
 
         if not accepted:
-            print("  Timeout!")
+            print("  Timeout — button press was not detected.")
+            if has_stored_pwd:
+                print("  The scooter may need a Bluetooth reset first:")
+                print("    - Use the Segway-Ninebot app to unpair, OR:")
+                print("    - Hold the POWER BUTTON for 10+ seconds to reset Bluetooth")
+                print("  Then run this setup again.")
             return None, None
 
         save_credentials(serial, password)
@@ -244,6 +277,9 @@ async def authenticate(client, device_name):
             return None, None
     else:
         print(f"  No auth response: {resp.hex() if resp else 'None'}")
+        if CREDENTIALS_FILE.exists():
+            print("  Stored credentials may be invalid — removing them.")
+            CREDENTIALS_FILE.unlink()
         return None, None
 
 
@@ -274,9 +310,9 @@ async def main():
     device = await BleakScanner.find_device_by_address(SCOOTER_ADDRESS, timeout=10.0)
     if not device:
         print("Not found!")
-        return
+        sys.exit(1)
 
-    device_name = device.name or "1CGBF2539C0792"
+    device_name = device.name or SCOOTER_ADDRESS.replace(":", "")
     print(f"Found: {device_name}")
 
     async with BleakClient(device, timeout=20.0) as client:
@@ -293,7 +329,7 @@ async def main():
 
         crypto, serial = await authenticate(client, device_name)
         if not crypto:
-            return
+            sys.exit(1)
 
         print(f"\n{'='*50}")
         print(f"Scooter: {serial} ({MODEL['name']})")

@@ -100,7 +100,7 @@ MODELS = {
              "name": "Trip Distance", "unit": "km", "device_class": "distance", "icon": "mdi:map-marker-path"},
             {"key": "trip_time",     "board": "vcu", "reg": 0x6A, "size": 2, "fmt": "<H", "scale": 1,
              "name": "Trip Time", "unit": "min", "icon": "mdi:timer-outline"},
-            {"key": "runtime",       "board": "vcu", "reg": 0x64, "size": 4, "fmt": "<I", "scale": 1/3600, "round": 1,
+            {"key": "runtime",       "board": "vcu", "reg": 0x64, "size": 4, "fmt": "<I", "scale": 1/36000, "round": 1,
              "name": "Total Runtime", "unit": "h", "icon": "mdi:clock-start"},
             {"key": "ride_time",     "board": "vcu", "reg": 0x66, "size": 4, "fmt": "<I", "scale": 1/3600, "round": 1,
              "name": "Total Ride Time", "unit": "h", "icon": "mdi:scooter"},

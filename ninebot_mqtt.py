@@ -26,7 +26,7 @@ config = configparser.ConfigParser()
 config.read(CONFIG_FILE)
 
 SCOOTER_ADDRESS = config.get("scooter", "address")
-SCOOTER_NAME = config.get("scooter", "name")
+SCOOTER_NAME = config.get("scooter", "name", fallback="ninebot_scooter")
 SCOOTER_MODEL = config.get("scooter", "model", fallback="g3")
 CREDENTIALS_FILE = Path(__file__).parent / "ninebot_credentials.json"
 
@@ -68,17 +68,32 @@ def build_packet(src, dst, cmd, arg, data=b""):
     return HEADER + pkt_body
 
 
+def _expected_packet_len(header_bytes: bytes) -> int:
+    if len(header_bytes) >= 3:
+        return header_bytes[2] + 13
+    return 0
+
+
 async def receive_response(timeout=5.0):
-    fragments = []
+    buf = bytearray()
     try:
         first = await asyncio.wait_for(response_queue.get(), timeout=timeout)
-        fragments.append(first)
-        await asyncio.sleep(0.15)
-        while not response_queue.empty():
-            fragments.append(response_queue.get_nowait())
+        buf.extend(first)
+        expected = _expected_packet_len(buf)
+        while len(buf) < expected:
+            try:
+                frag = await asyncio.wait_for(response_queue.get(), timeout=0.5)
+                buf.extend(frag)
+            except asyncio.TimeoutError:
+                break
     except asyncio.TimeoutError:
         return None
-    return b"".join(fragments)
+    expected = _expected_packet_len(buf)
+    if len(buf) > expected > 0:
+        remainder = bytes(buf[expected:])
+        response_queue.put_nowait(remainder)
+        return bytes(buf[:expected])
+    return bytes(buf)
 
 
 async def authenticate(client, device_name):
@@ -167,6 +182,7 @@ def publish_discovery(mqtt_client):
         entry = {
             "name": s["name"],
             "unique_id": f"{SCOOTER_NAME}_{s['key']}",
+            "object_id": f"{SCOOTER_NAME}_{s['key']}",
             "value_template": "{{ value_json." + s["key"] + " }}",
         }
         if "unit" in s:
@@ -183,6 +199,7 @@ def publish_discovery(mqtt_client):
                 d_entry = {
                     "name": d_meta.get("name", derived_key),
                     "unique_id": f"{SCOOTER_NAME}_{derived_key}",
+                    "object_id": f"{SCOOTER_NAME}_{derived_key}",
                     "value_template": "{{ value_json." + derived_key + " }}",
                 }
                 if "icon" in d_meta:
@@ -193,6 +210,7 @@ def publish_discovery(mqtt_client):
         entry = {
             "name": ms["name"],
             "unique_id": f"{SCOOTER_NAME}_{ms['key']}",
+            "object_id": f"{SCOOTER_NAME}_{ms['key']}",
             "value_template": "{{ value_json." + ms["key"] + " }}",
         }
         if "device_class" in ms:
@@ -201,13 +219,16 @@ def publish_discovery(mqtt_client):
             entry["icon"] = ms["icon"]
         sensors.append(entry)
 
+    published_topics = set()
     for sensor in sensors:
         sensor["device"] = device_info
         sensor["state_topic"] = state_topic
         topic = f"homeassistant/sensor/{sensor['unique_id']}/config"
         mqtt_client.publish(topic, json.dumps(sensor), retain=True)
+        published_topics.add(topic)
 
     print(f"Published HA discovery for {len(sensors)} sensors ({MODEL['name']})")
+    return published_topics
 
 
 async def read_all_sensors(client, crypto):
@@ -272,7 +293,11 @@ async def main():
     print(f"  Poll:    {POLL_INTERVAL}s ({POLL_INTERVAL // 60} min)")
     print(f"  BLE:     {mode}")
 
-    mqtt_client = setup_mqtt()
+    try:
+        mqtt_client = setup_mqtt()
+    except Exception as e:
+        print(f"Failed to connect to MQTT broker {MQTT_BROKER}:{MQTT_PORT}: {e}")
+        sys.exit(1)
     publish_discovery(mqtt_client)
 
     state_topic = f"homeassistant/sensor/{SCOOTER_NAME}/state"
@@ -290,7 +315,7 @@ async def main():
         if shutdown_event.is_set():
             break
 
-        device_name = device.name or "1CGBF2539C0792"
+        device_name = device.name or SCOOTER_ADDRESS.replace(":", "")
         print(f"  Scooter found! Connecting...")
 
         try:

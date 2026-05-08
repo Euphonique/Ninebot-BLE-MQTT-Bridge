@@ -15,6 +15,8 @@ SAMPLE_CONFIG = BASE_DIR / "config.sample.ini"
 CREDENTIALS_FILE = BASE_DIR / "ninebot_credentials.json"
 VENV_DIR = BASE_DIR / "venv"
 SERVICE_FILE = BASE_DIR / "ninebot-mqtt.service"
+SERVICE_NAME = "ninebot-mqtt"
+SERVICE_DEST = Path(f"/etc/systemd/system/{SERVICE_NAME}.service")
 
 REQUIRED_PACKAGES = ["bleak", "paho-mqtt", "cryptography"]
 
@@ -23,6 +25,7 @@ GREEN = "\033[92m"
 YELLOW = "\033[93m"
 RED = "\033[91m"
 BOLD = "\033[1m"
+DIM = "\033[2m"
 RESET = "\033[0m"
 
 
@@ -34,8 +37,8 @@ def banner():
 """)
 
 
-def step(num, text):
-    print(f"\n{BLUE}{BOLD}[Step {num}]{RESET} {BOLD}{text}{RESET}")
+def step(text):
+    print(f"\n{BLUE}{BOLD}──{RESET} {BOLD}{text}{RESET}")
     print(f"{BLUE}{'─' * 50}{RESET}")
 
 
@@ -63,48 +66,69 @@ def ask_choice(prompt, options):
         print(f"    {BOLD}{i}{RESET}) {label}")
     while True:
         try:
-            choice = int(input(f"\n  → Auswahl (1-{len(options)}): ").strip())
+            choice = int(input(f"\n  → Choice (1-{len(options)}): ").strip())
             if 1 <= choice <= len(options):
                 return options[choice - 1][1]
         except (ValueError, EOFError):
             pass
-        print(f"  {RED}Bitte eine Zahl zwischen 1 und {len(options)} eingeben.{RESET}")
+        print(f"  {RED}Please enter a number between 1 and {len(options)}.{RESET}")
 
 
 def ask_yes_no(prompt, default=True):
-    hint = "J/n" if default else "j/N"
+    hint = "Y/n" if default else "y/N"
     val = input(f"  → {prompt} [{hint}]: ").strip().lower()
     if not val:
         return default
-    return val in ("j", "ja", "y", "yes")
+    return val in ("y", "yes", "j", "ja")
 
 
-# ─── Step 1: Python & venv ───────────────────────────────────────────
+def pause():
+    input(f"\n  {BLUE}Press Enter to return to menu...{RESET}")
+
+
+def run_cmd(cmd, check=False):
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if check and result.returncode != 0:
+        return None
+    return result
+
+
+def run_sudo(cmd):
+    result = subprocess.run(["sudo"] + cmd, capture_output=True, text=True)
+    return result.returncode == 0
+
+
+# ─── Python & venv ──────────────────────────────────────────────────
+
+def get_python_bin():
+    return VENV_DIR / "bin" / "python" if os.name != "nt" else VENV_DIR / "Scripts" / "python.exe"
+
 
 def check_python():
-    step(1, "Python-Umgebung prüfen")
+    step("Check Python environment")
 
     v = sys.version_info
     if v >= (3, 9):
         ok(f"Python {v.major}.{v.minor}.{v.micro}")
     else:
-        fail(f"Python {v.major}.{v.minor} — mindestens 3.9 erforderlich.")
-        sys.exit(1)
+        fail(f"Python {v.major}.{v.minor} — at least 3.9 required.")
+        return False
 
     if VENV_DIR.exists():
-        ok(f"Virtualenv vorhanden: {VENV_DIR}")
+        ok(f"Virtualenv found: {VENV_DIR}")
     else:
-        print(f"  Erstelle virtualenv in {VENV_DIR}...")
+        print(f"  Creating virtualenv in {VENV_DIR}...")
         subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
-        ok("Virtualenv erstellt")
+        ok("Virtualenv created")
 
-    return VENV_DIR / "bin" / "python" if os.name != "nt" else VENV_DIR / "Scripts" / "python.exe"
+    return True
 
 
-# ─── Step 2: Dependencies ────────────────────────────────────────────
+# ─── Dependencies ───────────────────────────────────────────────────
 
-def check_dependencies(python_bin):
-    step(2, "Abhängigkeiten prüfen")
+def check_dependencies():
+    step("Check dependencies")
+    python_bin = get_python_bin()
 
     pip_cmd = [str(python_bin), "-m", "pip"]
     result = subprocess.run(
@@ -117,86 +141,97 @@ def check_dependencies(python_bin):
     for pkg in REQUIRED_PACKAGES:
         check_name = pkg.replace("-", "").replace("_", "")
         if check_name in installed.replace("-", "").replace("_", ""):
-            ok(f"{pkg} installiert")
+            ok(f"{pkg} installed")
         else:
-            warn(f"{pkg} fehlt")
+            warn(f"{pkg} missing")
             missing.append(pkg)
 
     if missing:
-        print(f"\n  Fehlende Pakete: {', '.join(missing)}")
-        if ask_yes_no("Jetzt installieren?"):
+        print(f"\n  Missing packages: {', '.join(missing)}")
+        if ask_yes_no("Install now?"):
             subprocess.check_call(pip_cmd + ["install", "--upgrade"] + missing)
-            ok("Alle Pakete installiert")
+            ok("All packages installed")
         else:
-            fail("Abbruch — Pakete werden benötigt.")
-            sys.exit(1)
+            fail("Aborted — packages are required.")
     else:
-        ok("Alle Abhängigkeiten erfüllt")
+        ok("All dependencies satisfied")
 
 
-# ─── Step 3: BLE-Scan ────────────────────────────────────────────────
+# ─── BLE-Scan ───────────────────────────────────────────────────────
 
-def scan_for_scooter(python_bin):
-    step(3, "Scooter suchen")
+def scan_for_scooter():
+    step("Find scooter")
+    python_bin = get_python_bin()
 
-    choice = ask_choice("Wie möchtest du den Scooter angeben?", [
-        ("BLE-Scan starten (Scooter muss eingeschaltet sein)", "scan"),
-        ("MAC-Adresse manuell eingeben", "manual"),
+    choice = ask_choice("How do you want to specify the scooter?", [
+        ("Start BLE scan (scooter must be turned on)", "scan"),
+        ("Enter MAC address manually", "manual"),
+        ("Back to main menu", "back"),
     ])
 
+    if choice == "back":
+        return None
+
     if choice == "manual":
-        addr = ask("MAC-Adresse (z.B. D5:A1:FB:35:12:80)")
+        addr = ask("MAC address (e.g. D5:A1:FB:35:12:80)")
         if not addr:
-            fail("Keine Adresse eingegeben.")
-            sys.exit(1)
+            fail("No address entered.")
+            return None
         return addr
 
-    print("\n  Scanne nach BLE-Geräten... (Scooter-Display einschalten!)")
+    print("\n  Scanning for BLE devices... (turn on the scooter display!)")
 
     scan_script = """
 import asyncio, json
 from bleak import BleakScanner
 
 async def scan():
-    devices = await BleakScanner.discover(timeout=10.0)
+    devices = await BleakScanner.discover(timeout=10.0, return_adv=True)
     results = []
-    for d in sorted(devices, key=lambda x: x.rssi or -999, reverse=True):
-        name = d.name or "Unknown"
+    sorted_items = sorted(devices.values(), key=lambda x: x[1].rssi or -999, reverse=True)
+    for d, adv in sorted_items:
+        name = d.name or adv.local_name or "Unknown"
         if any(k in name.lower() for k in ["ninebot", "segway", "scooter", "nb-"]):
-            results.append({"addr": d.address, "name": name, "rssi": d.rssi, "match": True})
+            results.append({"addr": d.address, "name": name, "rssi": adv.rssi, "match": True})
         else:
-            results.append({"addr": d.address, "name": name, "rssi": d.rssi, "match": False})
+            results.append({"addr": d.address, "name": name, "rssi": adv.rssi, "match": False})
     print(json.dumps(results))
 
 asyncio.run(scan())
 """
-    result = subprocess.run(
-        [str(python_bin), "-c", scan_script],
-        capture_output=True, text=True, timeout=30
-    )
+    try:
+        result = subprocess.run(
+            [str(python_bin), "-c", scan_script],
+            capture_output=True, text=True, timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        fail("Scan timed out.")
+        warn("Tip: On Linux you may need to run 'sudo setcap cap_net_raw+eip $(which python3)'")
+        addr = ask("Enter MAC address manually")
+        return addr or None
 
     if result.returncode != 0:
-        fail(f"Scan fehlgeschlagen: {result.stderr.strip()}")
-        warn("Tipp: Auf Linux ggf. 'sudo setcap cap_net_raw+eip $(which python3)' ausführen")
-        addr = ask("MAC-Adresse manuell eingeben")
-        return addr
+        fail(f"Scan failed: {result.stderr.strip()}")
+        warn("Tip: On Linux you may need to run 'sudo setcap cap_net_raw+eip $(which python3)'")
+        addr = ask("Enter MAC address manually")
+        return addr or None
 
     try:
         devices = json.loads(result.stdout.strip())
     except (json.JSONDecodeError, ValueError):
-        fail("Scan lieferte keine Ergebnisse.")
-        addr = ask("MAC-Adresse manuell eingeben")
-        return addr
+        fail("Scan returned no results.")
+        addr = ask("Enter MAC address manually")
+        return addr or None
 
     if not devices:
-        warn("Keine BLE-Geräte gefunden.")
-        addr = ask("MAC-Adresse manuell eingeben")
-        return addr
+        warn("No BLE devices found.")
+        addr = ask("Enter MAC address manually")
+        return addr or None
 
     matches = [d for d in devices if d["match"]]
     others = [d for d in devices if not d["match"]]
 
-    print(f"\n  {GREEN}Gefundene Geräte:{RESET}")
+    print(f"\n  {GREEN}Devices found:{RESET}")
 
     options = []
     idx = 0
@@ -210,9 +245,9 @@ asyncio.run(scan())
             options.append(d["addr"])
 
     if others:
-        show_others = len(matches) == 0 or ask_yes_no("Auch andere BLE-Geräte anzeigen?", default=False)
+        show_others = len(matches) == 0 or ask_yes_no("Also show other BLE devices?", default=False)
         if show_others:
-            print(f"\n  {BOLD}── Andere Geräte ──{RESET}")
+            print(f"\n  {BOLD}── Other devices ──{RESET}")
             for d in others[:20]:
                 idx += 1
                 rssi = f"{d['rssi']} dBm" if d['rssi'] else "?"
@@ -220,37 +255,38 @@ asyncio.run(scan())
                 options.append(d["addr"])
 
     idx += 1
-    print(f"    {BOLD}{idx}{RESET}) MAC-Adresse manuell eingeben")
+    print(f"    {BOLD}{idx}{RESET}) Enter MAC address manually")
     options.append("manual")
 
     while True:
         try:
-            choice = int(input(f"\n  → Scooter auswählen (1-{idx}): ").strip())
+            choice = int(input(f"\n  → Select scooter (1-{idx}): ").strip())
             if 1 <= choice <= idx:
                 selected = options[choice - 1]
                 if selected == "manual":
-                    return ask("MAC-Adresse")
-                ok(f"Ausgewählt: {selected}")
+                    addr = ask("MAC address")
+                    return addr or None
+                ok(f"Selected: {selected}")
                 return selected
         except (ValueError, EOFError):
             pass
-        print(f"  {RED}Bitte eine Zahl zwischen 1 und {idx} eingeben.{RESET}")
+        print(f"  {RED}Please enter a number between 1 and {idx}.{RESET}")
 
 
-# ─── Step 4: MQTT ────────────────────────────────────────────────────
+# ─── MQTT ───────────────────────────────────────────────────────────
 
 def configure_mqtt():
-    step(4, "MQTT konfigurieren")
+    step("Configure MQTT")
 
-    broker = ask("MQTT Broker IP/Hostname", "192.168.1.100")
-    port = ask("MQTT Port", "1883")
+    broker = ask("MQTT broker IP/hostname", "192.168.1.100")
+    port = ask("MQTT port", "1883")
 
-    use_auth = ask_yes_no("MQTT Authentifizierung verwenden?", default=True)
+    use_auth = ask_yes_no("Use MQTT authentication?", default=True)
     user = ""
     password = ""
     if use_auth:
-        user = ask("MQTT Benutzername")
-        password = ask("MQTT Passwort")
+        user = ask("MQTT username")
+        password = ask("MQTT password")
 
     return {
         "broker": broker,
@@ -260,32 +296,32 @@ def configure_mqtt():
     }
 
 
-# ─── Step 5: Config schreiben ────────────────────────────────────────
+# ─── Model / BLE config ────────────────────────────────────────────
 
 def choose_model():
-    step("4b", "Scooter-Modell auswählen")
+    step("Select scooter model")
 
     try:
         from models import list_models
         available = list_models()
     except ImportError:
-        warn("models.py nicht gefunden — verwende 'g3' als Standard.")
+        warn("models.py not found — using 'g3' as default.")
         return "g3"
 
     options = [(f"{name} ({key})", key) for key, name in available]
-    return ask_choice("Welches Scooter-Modell hast du?", options)
+    return ask_choice("Which scooter model do you have?", options)
 
 
 def configure_ble():
-    step("4c", "BLE-Verbindung konfigurieren")
+    step("Configure BLE connection")
 
     keep_alive = ask_yes_no(
-        "BLE-Verbindung zwischen Abfragen offen halten?\n"
-        "    Ja  = schnellere Abfragen, verbraucht aber Scooter-Akku\n"
-        "    Nein = verbindet sich nur zum Abfragen (empfohlen bei langen Intervallen)\n"
-        "  Dauerhaft verbunden bleiben?", default=False)
+        "Keep BLE connection open between polls?\n"
+        "    Yes = faster polling, but drains scooter battery\n"
+        "    No  = connects only when polling (recommended for long intervals)\n"
+        "  Stay permanently connected?", default=False)
 
-    reconnect = ask("Sekunden bis Reconnect nach Verbindungsverlust", "30")
+    reconnect = ask("Seconds until reconnect after connection loss", "30")
 
     return {
         "keep_alive": str(keep_alive).lower(),
@@ -293,11 +329,13 @@ def configure_ble():
     }
 
 
-def write_config(scooter_addr, mqtt_settings, model_key, ble_settings):
-    step(5, "Konfiguration speichern")
+# ─── Write config ──────────────────────────────────────────────────
 
-    name = ask("HA Entity-Name (für Sensor-IDs)", "ninebot_max_g3")
-    poll = ask("Abfrageintervall in Sekunden", "1200")
+def write_config(scooter_addr, mqtt_settings, model_key, ble_settings):
+    step("Save configuration")
+
+    name = ask("HA entity name (for sensor IDs)", "ninebot_max_g3")
+    poll = ask("Poll interval in seconds", "1200")
 
     config = configparser.ConfigParser()
     config["scooter"] = {
@@ -315,66 +353,76 @@ def write_config(scooter_addr, mqtt_settings, model_key, ble_settings):
     config["ble"] = ble_settings
 
     if CONFIG_FILE.exists():
-        if not ask_yes_no(f"config.ini existiert bereits. Überschreiben?", default=False):
-            warn("Übersprungen — bestehende config.ini wird beibehalten.")
-            return
+        if not ask_yes_no(f"config.ini already exists. Overwrite?", default=False):
+            existing = configparser.ConfigParser()
+            existing.read(CONFIG_FILE)
+            for section in config.sections():
+                if not existing.has_section(section):
+                    existing.add_section(section)
+                for key, value in config.items(section):
+                    existing.set(section, key, value)
+            config = existing
+            ok("Merged new values into existing config.ini.")
     with open(CONFIG_FILE, "w") as f:
-        f.write("# Ninebot BLE-MQTT Bridge Konfiguration\n")
-        f.write("# Erstellt durch setup.py\n\n")
+        f.write("# Ninebot BLE-MQTT Bridge Configuration\n")
+        f.write("# Created by setup.py\n\n")
         config.write(f)
-    ok(f"Gespeichert: {CONFIG_FILE}")
+    ok(f"Saved: {CONFIG_FILE}")
 
 
-# ─── Step 6: Pairing ─────────────────────────────────────────────────
+# ─── Pairing ────────────────────────────────────────────────────────
 
-def pair_scooter(python_bin):
-    step(6, "Mit Scooter koppeln")
+def pair_scooter():
+    step("Pair with scooter")
+    python_bin = get_python_bin()
 
     if CREDENTIALS_FILE.exists():
         creds = json.loads(CREDENTIALS_FILE.read_text())
-        ok(f"Bereits gekoppelt (Serial: {creds.get('serial', '?')})")
-        if not ask_yes_no("Trotzdem neu koppeln?", default=False):
+        ok(f"Already paired (Serial: {creds.get('serial', '?')})")
+        if not ask_yes_no("Re-pair anyway?", default=False):
             return True
 
     print(f"""
-  {YELLOW}{BOLD}Vorbereitung:{RESET}
-  1. Scooter einschalten (Display muss leuchten)
-  2. Beim Koppeln die {BOLD}Power-Taste am Scooter drücken{RESET} wenn aufgefordert
+  {YELLOW}{BOLD}Preparation:{RESET}
+  1. Turn on the scooter (display must be lit)
+  2. When prompted, {BOLD}press the power button on the scooter{RESET}
 """)
 
-    if not ask_yes_no("Bereit? Pairing starten?"):
-        warn("Übersprungen — du kannst später 'python ninebot.py' ausführen.")
+    if not ask_yes_no("Ready? Start pairing?"):
+        warn("Skipped — you can run 'python ninebot.py' later.")
         return False
 
-    print(f"\n  Starte Pairing...\n")
+    print(f"\n  Starting pairing...\n")
     result = subprocess.run(
         [str(python_bin), str(BASE_DIR / "ninebot.py")],
         cwd=str(BASE_DIR)
     )
 
     if result.returncode == 0 and CREDENTIALS_FILE.exists():
-        ok("Pairing erfolgreich!")
+        ok("Pairing successful!")
         return True
     else:
-        fail("Pairing fehlgeschlagen.")
-        warn("Stelle sicher, dass der Scooter eingeschaltet ist und versuche es erneut.")
+        fail("Pairing failed.")
+        warn("Make sure the scooter is turned on and try again.")
         return False
 
 
-# ─── Step 7: Systemd Service ─────────────────────────────────────────
+# ─── Systemd Service ────────────────────────────────────────────────
 
-def setup_service(python_bin):
-    step(7, "Systemd-Service einrichten (optional)")
+def is_service_installed():
+    return SERVICE_DEST.exists()
 
-    if os.name == "nt":
-        warn("Systemd ist nur auf Linux verfügbar — übersprungen.")
-        return
 
-    if not ask_yes_no("Soll der MQTT-Bridge als systemd-Service installiert werden?"):
-        warn("Übersprungen — du kannst den Service später manuell einrichten.")
-        return
+def get_service_status():
+    if os.name == "nt" or not is_service_installed():
+        return None
+    result = run_cmd(["systemctl", "is-active", SERVICE_NAME])
+    return result.stdout.strip() if result else None
 
-    user = ask("Linux-Benutzer für den Service", os.environ.get("USER", "pi"))
+
+def create_service_file():
+    python_bin = get_python_bin()
+    user = ask("Linux user for the service", os.environ.get("USER", "pi"))
     work_dir = str(BASE_DIR.resolve())
     python_path = str(python_bin.resolve()) if python_bin.exists() else str(python_bin)
     mqtt_script = str((BASE_DIR / "ninebot_mqtt.py").resolve())
@@ -397,98 +445,335 @@ WantedBy=multi-user.target
 """
     with open(SERVICE_FILE, "w") as f:
         f.write(service_content)
-    ok(f"Service-Datei geschrieben: {SERVICE_FILE}")
-
-    service_dest = Path("/etc/systemd/system/ninebot-mqtt.service")
-    print(f"\n  Zum Aktivieren ausführen:")
-    print(f"    {BOLD}sudo cp {SERVICE_FILE} {service_dest}{RESET}")
-    print(f"    {BOLD}sudo systemctl daemon-reload{RESET}")
-    print(f"    {BOLD}sudo systemctl enable --now ninebot-mqtt{RESET}")
+    ok(f"Service file written: {SERVICE_FILE}")
+    return True
 
 
-# ─── Main ────────────────────────────────────────────────────────────
+def service_menu():
+    if os.name == "nt":
+        warn("Systemd is only available on Linux.")
+        return
+
+    while True:
+        installed = is_service_installed()
+        status = get_service_status()
+
+        status_text = f"{GREEN}active{RESET}" if status == "active" else \
+                      f"{RED}{status}{RESET}" if status else f"{DIM}not installed{RESET}"
+
+        step(f"Service management  [{status_text}]")
+
+        options = []
+        if not installed:
+            options.append(("Install service", "install"))
+        else:
+            if status == "active":
+                options.append(("Restart service", "restart"))
+                options.append(("Stop service", "stop"))
+            else:
+                options.append(("Start service", "start"))
+                options.append(("Restart service", "restart"))
+            options.append(("View logs (last 30 lines)", "logs"))
+            options.append(("Uninstall service", "uninstall"))
+        options.append(("Back to main menu", "back"))
+
+        choice = ask_choice("Service options:", options)
+
+        if choice == "back":
+            return
+
+        if choice == "install":
+            if not create_service_file():
+                continue
+            print(f"\n  Installing service...")
+            if run_sudo(["cp", str(SERVICE_FILE), str(SERVICE_DEST)]) and \
+               run_sudo(["systemctl", "daemon-reload"]) and \
+               run_sudo(["systemctl", "enable", SERVICE_NAME]):
+                ok("Service installed and enabled")
+                if ask_yes_no("Start service now?"):
+                    if run_sudo(["systemctl", "start", SERVICE_NAME]):
+                        ok("Service started")
+                    else:
+                        fail("Failed to start service")
+            else:
+                fail("Failed to install service (sudo required)")
+
+        elif choice == "start":
+            if run_sudo(["systemctl", "start", SERVICE_NAME]):
+                ok("Service started")
+            else:
+                fail("Failed to start service")
+
+        elif choice == "stop":
+            if run_sudo(["systemctl", "stop", SERVICE_NAME]):
+                ok("Service stopped")
+            else:
+                fail("Failed to stop service")
+
+        elif choice == "restart":
+            if run_sudo(["systemctl", "restart", SERVICE_NAME]):
+                ok("Service restarted")
+            else:
+                fail("Failed to restart service")
+
+        elif choice == "logs":
+            print()
+            result = subprocess.run(
+                ["sudo", "journalctl", "-u", SERVICE_NAME, "-n", "30", "--no-pager"],
+                text=True
+            )
+
+        elif choice == "uninstall":
+            if not ask_yes_no("Really uninstall the service?", default=False):
+                continue
+            run_sudo(["systemctl", "stop", SERVICE_NAME])
+            run_sudo(["systemctl", "disable", SERVICE_NAME])
+            if run_sudo(["rm", str(SERVICE_DEST)]) and \
+               run_sudo(["systemctl", "daemon-reload"]):
+                ok("Service uninstalled")
+            else:
+                fail("Failed to uninstall service")
+
+        pause()
+
+
+# ─── MQTT connection test ───────────────────────────────────────────
+
+def test_mqtt_connection():
+    if not CONFIG_FILE.exists():
+        return None, "no config"
+
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE)
+    broker = config.get("mqtt", "broker", fallback=None)
+    port = config.getint("mqtt", "port", fallback=1883)
+    user = config.get("mqtt", "user", fallback="")
+    password = config.get("mqtt", "password", fallback="")
+
+    if not broker:
+        return None, "no broker configured"
+
+    python_bin = get_python_bin()
+    test_script = f"""
+import sys
+try:
+    import paho.mqtt.client as mqtt
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="ninebot_test")
+    if {repr(user)}:
+        c.username_pw_set({repr(user)}, {repr(password)})
+    c.connect({repr(broker)}, {port}, keepalive=5)
+    c.disconnect()
+    print("ok")
+except Exception as e:
+    print(f"error:{{e}}")
+"""
+    try:
+        result = subprocess.run(
+            [str(python_bin), "-c", test_script],
+            capture_output=True, text=True, timeout=10
+        )
+        output = result.stdout.strip()
+        if output == "ok":
+            return True, f"{broker}:{port}"
+        elif output.startswith("error:"):
+            return False, output[6:]
+        else:
+            return False, result.stderr.strip() or "unknown error"
+    except subprocess.TimeoutExpired:
+        return False, "connection timed out"
+    except Exception as e:
+        return None, str(e)
+
+
+# ─── Status ─────────────────────────────────────────────────────────
+
+def show_status():
+    step("Current status")
+
+    # Config
+    print(f"\n  {BOLD}Configuration{RESET}")
+    if CONFIG_FILE.exists():
+        config = configparser.ConfigParser()
+        config.read(CONFIG_FILE)
+        addr = config.get("scooter", "address", fallback="not set")
+        model = config.get("scooter", "model", fallback="not set")
+        name = config.get("scooter", "name", fallback="not set")
+        broker = config.get("mqtt", "broker", fallback="not set")
+        port = config.get("mqtt", "port", fallback="not set")
+        poll = config.get("timing", "poll_interval", fallback="not set")
+        ok(f"config.ini found")
+        print(f"    Scooter:  {addr} ({model})")
+        print(f"    Name:     {name}")
+        print(f"    MQTT:     {broker}:{port}")
+        print(f"    Poll:     {poll}s")
+    else:
+        warn("No config.ini found")
+
+    # Pairing
+    print(f"\n  {BOLD}Pairing{RESET}")
+    if CREDENTIALS_FILE.exists():
+        creds = json.loads(CREDENTIALS_FILE.read_text())
+        ok(f"Paired (Serial: {creds.get('serial', '?')})")
+    else:
+        warn("Not paired — no credentials file")
+
+    # Virtualenv
+    print(f"\n  {BOLD}Environment{RESET}")
+    if VENV_DIR.exists():
+        ok(f"Virtualenv: {VENV_DIR}")
+    else:
+        warn("No virtualenv")
+
+    # MQTT connection
+    print(f"\n  {BOLD}MQTT broker{RESET}")
+    mqtt_ok, mqtt_info = test_mqtt_connection()
+    if mqtt_ok is True:
+        ok(f"Connected to {mqtt_info}")
+    elif mqtt_ok is False:
+        fail(f"Cannot connect: {mqtt_info}")
+    else:
+        warn(f"Not tested: {mqtt_info}")
+
+    # Service
+    print(f"\n  {BOLD}Systemd service{RESET}")
+    if os.name == "nt":
+        warn("Not available on Windows")
+    elif not is_service_installed():
+        warn("Not installed")
+    else:
+        status = get_service_status()
+        if status == "active":
+            ok(f"Service: {GREEN}running{RESET}")
+            result = run_cmd(["systemctl", "show", SERVICE_NAME,
+                              "--property=ActiveEnterTimestamp", "--value"])
+            if result and result.stdout.strip():
+                print(f"    Since: {result.stdout.strip()}")
+        elif status == "inactive":
+            warn("Service: stopped")
+        elif status == "failed":
+            fail("Service: failed")
+            result = subprocess.run(
+                ["journalctl", "-u", SERVICE_NAME, "-n", "3", "--no-pager", "-q"],
+                capture_output=True, text=True
+            )
+            if result.stdout.strip():
+                for line in result.stdout.strip().split("\n"):
+                    print(f"    {DIM}{line}{RESET}")
+        else:
+            warn(f"Service: {status}")
+
+        enabled = run_cmd(["systemctl", "is-enabled", SERVICE_NAME])
+        if enabled and enabled.stdout.strip() == "enabled":
+            ok("Auto-start: enabled")
+        else:
+            warn("Auto-start: disabled")
+
+
+# ─── Full setup ─────────────────────────────────────────────────────
+
+def full_setup():
+    if not check_python():
+        return
+    check_dependencies()
+    scooter_addr = scan_for_scooter()
+    if not scooter_addr:
+        fail("No scooter address — aborting full setup.")
+        return
+    model_key = choose_model()
+    mqtt_settings = configure_mqtt()
+    ble_settings = configure_ble()
+    write_config(scooter_addr, mqtt_settings, model_key, ble_settings)
+    pair_scooter()
+    service_menu()
+
+
+# ─── Find & pair ────────────────────────────────────────────────────
+
+def find_and_pair():
+    scooter_addr = scan_for_scooter()
+    if not scooter_addr:
+        return
+    model_key = choose_model()
+
+    config = configparser.ConfigParser()
+    if CONFIG_FILE.exists():
+        config.read(CONFIG_FILE)
+    elif SAMPLE_CONFIG.exists():
+        config.read(SAMPLE_CONFIG)
+    if not config.has_section("scooter"):
+        config.add_section("scooter")
+    config.set("scooter", "address", scooter_addr)
+    config.set("scooter", "model", model_key)
+    if not config.has_option("scooter", "name"):
+        config.set("scooter", "name", f"ninebot_{model_key}")
+    with open(CONFIG_FILE, "w") as f:
+        config.write(f)
+    ok(f"Scooter address saved to {CONFIG_FILE}")
+
+    pair_scooter()
+
+
+# ─── Configure MQTT ─────────────────────────────────────────────────
+
+def mqtt_setup():
+    if CONFIG_FILE.exists():
+        config = configparser.ConfigParser()
+        config.read(CONFIG_FILE)
+        scooter_addr = config.get("scooter", "address", fallback="XX:XX:XX:XX:XX:XX")
+        model_key = config.get("scooter", "model", fallback="g3")
+    else:
+        scooter_addr = "XX:XX:XX:XX:XX:XX"
+        model_key = choose_model()
+    mqtt_settings = configure_mqtt()
+    ble_settings = configure_ble()
+    write_config(scooter_addr, mqtt_settings, model_key, ble_settings)
+
+
+# ─── Main menu ──────────────────────────────────────────────────────
 
 def main():
     banner()
 
-    choice = ask_choice("Was möchtest du tun?", [
-        ("Komplette Ersteinrichtung", "full"),
-        ("Nur Abhängigkeiten installieren", "deps"),
-        ("Nur Scooter suchen & koppeln", "pair"),
-        ("Nur MQTT konfigurieren", "mqtt"),
-        ("Nur systemd-Service einrichten", "service"),
-    ])
+    if not check_python():
+        print(f"\n{RED}Python 3.9+ is required. Exiting.{RESET}")
+        sys.exit(1)
 
-    python_bin = check_python()
+    while True:
+        choice = ask_choice("What would you like to do?", [
+            ("Full initial setup", "full"),
+            ("Install dependencies", "deps"),
+            ("Find & pair scooter", "pair"),
+            ("Configure MQTT", "mqtt"),
+            ("Manage systemd service", "service"),
+            ("Show current status", "status"),
+            ("Quit", "quit"),
+        ])
 
-    if choice in ("full", "deps"):
-        check_dependencies(python_bin)
-        if choice == "deps":
-            print(f"\n{GREEN}{BOLD}Fertig!{RESET}")
-            return
-
-    model_key = "g3"
-
-    if choice in ("full", "pair"):
-        scooter_addr = scan_for_scooter(python_bin)
-        model_key = choose_model()
-    else:
-        scooter_addr = None
-
-    if choice in ("full", "mqtt"):
-        mqtt_settings = configure_mqtt()
-    else:
-        mqtt_settings = None
-
-    if choice == "full":
-        ble_settings = configure_ble()
-        write_config(scooter_addr, mqtt_settings, model_key, ble_settings)
-        pair_scooter(python_bin)
-        setup_service(python_bin)
-    elif choice == "pair":
-        if not CONFIG_FILE.exists():
-            warn("Keine config.ini gefunden — schreibe Scooter-Adresse...")
-            config = configparser.ConfigParser()
-            if SAMPLE_CONFIG.exists():
-                config.read(SAMPLE_CONFIG)
-            config.setdefault("scooter", {})["address"] = scooter_addr
-            config.setdefault("scooter", {})["model"] = model_key
-            with open(CONFIG_FILE, "w") as f:
-                config.write(f)
-        pair_scooter(python_bin)
-    elif choice == "mqtt":
-        if CONFIG_FILE.exists():
-            config = configparser.ConfigParser()
-            config.read(CONFIG_FILE)
-            scooter_addr = config.get("scooter", "address", fallback="XX:XX:XX:XX:XX:XX")
-            model_key = config.get("scooter", "model", fallback="g3")
-        else:
-            scooter_addr = "XX:XX:XX:XX:XX:XX"
-            model_key = choose_model()
-        ble_settings = configure_ble()
-        write_config(scooter_addr, mqtt_settings, model_key, ble_settings)
-    elif choice == "service":
-        setup_service(python_bin)
-
-    print(f"""
-{GREEN}{BOLD}╔══════════════════════════════════════════════════╗
-║                  Setup abgeschlossen!            ║
-╚══════════════════════════════════════════════════╝{RESET}
-
-  Konfiguration:  {CONFIG_FILE}
-  Credentials:    {CREDENTIALS_FILE}
-
-  {BOLD}Manuell starten:{RESET}
-    {VENV_DIR / 'bin' / 'python'} ninebot_mqtt.py
-
-  {BOLD}Logs ansehen:{RESET}
-    sudo journalctl -u ninebot-mqtt -f
-""")
+        if choice == "quit":
+            print(f"\n{BLUE}Goodbye!{RESET}\n")
+            break
+        elif choice == "full":
+            full_setup()
+            pause()
+        elif choice == "deps":
+            check_dependencies()
+            pause()
+        elif choice == "pair":
+            find_and_pair()
+            pause()
+        elif choice == "mqtt":
+            mqtt_setup()
+            pause()
+        elif choice == "service":
+            service_menu()
+        elif choice == "status":
+            show_status()
+            pause()
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print(f"\n\n{YELLOW}Abgebrochen.{RESET}")
+        print(f"\n\n{YELLOW}Cancelled.{RESET}")
         sys.exit(0)
