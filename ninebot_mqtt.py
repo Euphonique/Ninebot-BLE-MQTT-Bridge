@@ -167,6 +167,27 @@ def setup_mqtt():
     return client
 
 
+async def cleanup_old_discovery(mqtt_client, current_topics):
+    stale = []
+
+    def on_message(client, userdata, msg):
+        if msg.topic not in current_topics and msg.retain:
+            stale.append(msg.topic)
+
+    mqtt_client.on_message = on_message
+    mqtt_client.subscribe(f"homeassistant/sensor/{SCOOTER_NAME}_+/config")
+    await asyncio.sleep(3)
+    mqtt_client.unsubscribe(f"homeassistant/sensor/{SCOOTER_NAME}_+/config")
+    mqtt_client.on_message = None
+
+    for topic in stale:
+        mqtt_client.publish(topic, "", retain=True)
+        print(f"  Removed stale discovery: {topic}")
+
+    if stale:
+        print(f"  Cleaned up {len(stale)} stale discovery topic(s)")
+
+
 def publish_discovery(mqtt_client):
     device_info = {
         "identifiers": [SCOOTER_NAME],
@@ -213,6 +234,8 @@ def publish_discovery(mqtt_client):
             "object_id": f"{SCOOTER_NAME}_{ms['key']}",
             "value_template": "{{ value_json." + ms["key"] + " }}",
         }
+        if "unit" in ms:
+            entry["unit_of_measurement"] = ms["unit"]
         if "device_class" in ms:
             entry["device_class"] = ms["device_class"]
         if "icon" in ms:
@@ -230,6 +253,9 @@ def publish_discovery(mqtt_client):
     print(f"Published HA discovery for {len(sensors)} sensors ({MODEL['name']})")
     return published_topics
 
+
+STICKY_KEYS = {"trip_distance", "trip_time", "avg_speed"}
+_last_trip_values = {}
 
 async def read_all_sensors(client, crypto):
     data = {}
@@ -252,8 +278,19 @@ async def read_all_sensors(client, crypto):
         elif transform == "bms_temp_packed":
             raw_val = struct.unpack(s["fmt"], raw[:struct.calcsize(s["fmt"])])[0]
             data[s["key"]] = (raw_val & 0xFF) - 20
+        elif transform == "lock_bit":
+            data[s["key"]] = "locked" if (int(value) & (1 << 2)) else "unlocked"
+        elif transform == "fw_version":
+            v = int(value)
+            data[s["key"]] = f"{(v >> 8) & 0xFF}.{v & 0xFF}"
         else:
             data[s["key"]] = value
+
+        if s["key"] in STICKY_KEYS:
+            if value > 0:
+                _last_trip_values[s["key"]] = data[s["key"]]
+            elif s["key"] in _last_trip_values:
+                data[s["key"]] = _last_trip_values[s["key"]]
 
         if "derive" in s:
             for derived_key, derived_cfg in s["derive"].items():
@@ -261,6 +298,15 @@ async def read_all_sensors(client, crypto):
                     data[derived_key] = derived_cfg["positive"]
                 else:
                     data[derived_key] = derived_cfg["negative"]
+
+    dist = data.get("trip_distance", 0)
+    mins = data.get("trip_time", 0)
+    if dist > 0 and mins > 0:
+        avg = round(dist / (mins / 60), 1)
+        data["avg_speed"] = avg
+        _last_trip_values["avg_speed"] = avg
+    elif "avg_speed" in _last_trip_values:
+        data["avg_speed"] = _last_trip_values["avg_speed"]
 
     return data
 
@@ -298,7 +344,8 @@ async def main():
     except Exception as e:
         print(f"Failed to connect to MQTT broker {MQTT_BROKER}:{MQTT_PORT}: {e}")
         sys.exit(1)
-    publish_discovery(mqtt_client)
+    current_topics = publish_discovery(mqtt_client)
+    await cleanup_old_discovery(mqtt_client, current_topics)
 
     state_topic = f"homeassistant/sensor/{SCOOTER_NAME}/state"
     avail_topic = f"homeassistant/sensor/{SCOOTER_NAME}/availability"

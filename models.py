@@ -82,7 +82,7 @@ MODELS = {
         "serial_prefixes": ["1CG"],
         "ble": _NUS_UUIDS,
         "ble_board": 0x04,
-        "boards": {"vcu": 0x00, "bms": 0x07},
+        "boards": {"vcu": 0x00, "bms": 0x07, "mcu": 0x02},
         "gear_modes": {1: "Walk", 2: "Eco", 3: "Off", 4: "Sport", 5: "Drive"},
         "sensors": [
             # ── VCU ──
@@ -90,7 +90,7 @@ MODELS = {
              "name": "Battery", "unit": "%", "device_class": "battery"},
             {"key": "speed",         "board": "vcu", "reg": 0x57, "size": 2, "fmt": "<H", "scale": 0.1,
              "name": "Speed", "unit": "km/h", "device_class": "speed", "icon": "mdi:speedometer"},
-            {"key": "range",         "board": "vcu", "reg": 0x5F, "size": 2, "fmt": "<H", "scale": 0.01,
+            {"key": "range",         "board": "vcu", "reg": 0x5F, "size": 4, "fmt": "<I", "scale": 0.01, "round": 1,
              "name": "Range", "unit": "km", "device_class": "distance", "icon": "mdi:map-marker-distance"},
             {"key": "odometer",      "board": "vcu", "reg": 0x62, "size": 4, "fmt": "<I", "scale": 0.1,
              "name": "Odometer", "unit": "km", "device_class": "distance", "icon": "mdi:counter"},
@@ -110,6 +110,20 @@ MODELS = {
              "name": "Error Code", "icon": "mdi:alert-circle"},
             {"key": "warn_code",     "board": "vcu", "reg": 0x59, "size": 2, "fmt": "<H", "scale": 1,
              "name": "Warning Code", "icon": "mdi:alert"},
+            {"key": "lock_status",   "board": "vcu", "reg": 0x1D, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "Lock Status", "icon": "mdi:lock", "transform": "lock_bit"},
+            {"key": "led_mode",      "board": "vcu", "reg": 0x5B, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "LED Mode", "icon": "mdi:lightbulb"},
+            {"key": "tail_light",    "board": "vcu", "reg": 0x5D, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "Tail Light Mode", "icon": "mdi:car-light-dimmed"},
+            {"key": "auto_off_time", "board": "vcu", "reg": 0x49, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "Auto Power Off", "unit": "min", "icon": "mdi:timer-off-outline"},
+            {"key": "fw_vcu",        "board": "vcu", "reg": 0x17, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "VCU Firmware", "icon": "mdi:chip", "transform": "fw_version"},
+            {"key": "fw_mcu",        "board": "vcu", "reg": 0x18, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "MCU Firmware", "icon": "mdi:chip", "transform": "fw_version"},
+            {"key": "fw_bms",        "board": "vcu", "reg": 0x19, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "BMS Firmware", "icon": "mdi:chip", "transform": "fw_version"},
             # ── BMS ──
             {"key": "voltage",       "board": "bms", "reg": 0x8C, "size": 2, "fmt": "<H", "scale": 0.01,
              "name": "Battery Voltage", "unit": "V", "device_class": "voltage", "icon": "mdi:flash"},
@@ -120,6 +134,21 @@ MODELS = {
              "name": "Charge Cycles", "icon": "mdi:battery-sync"},
             {"key": "bms_temp",      "board": "bms", "reg": 0x96, "size": 4, "fmt": "<h", "scale": 1,
              "name": "BMS Temperature", "unit": "°C", "device_class": "temperature", "icon": "mdi:thermometer"},
+            {"key": "factory_capacity",   "board": "bms", "reg": 0x5A, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "Factory Capacity", "unit": "mAh", "icon": "mdi:battery-plus-variant"},
+            {"key": "available_capacity", "board": "bms", "reg": 0x5B, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "Available Capacity", "unit": "mAh", "icon": "mdi:battery"},
+            {"key": "remaining_capacity", "board": "bms", "reg": 0x8A, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "Remaining Capacity", "unit": "mAh", "icon": "mdi:battery-heart-variant"},
+            {"key": "time_to_full",  "board": "bms", "reg": 0x94, "size": 2, "fmt": "<H", "scale": 1,
+             "name": "Time to Full Charge", "unit": "min", "icon": "mdi:battery-clock"},
+            {"key": "energy_throughput",  "board": "bms", "reg": 0xE3, "size": 4, "fmt": "<I", "scale": 1,
+             "name": "Lifetime Energy", "unit": "Wh", "icon": "mdi:lightning-bolt"},
+            # ── MCU (Motor) ──
+            {"key": "motor_temp_a",  "board": "mcu", "reg": 0x48, "size": 2, "fmt": "<h", "scale": 0.1, "round": 1,
+             "name": "Motor Temp A", "unit": "°C", "device_class": "temperature", "icon": "mdi:thermometer"},
+            {"key": "motor_temp_b",  "board": "mcu", "reg": 0x49, "size": 2, "fmt": "<h", "scale": 0.1, "round": 1,
+             "name": "Motor Temp B", "unit": "°C", "device_class": "temperature", "icon": "mdi:thermometer"},
         ],
     },
 
@@ -206,6 +235,7 @@ DERIVED_SENSORS = {
 }
 
 META_SENSORS = [
+    {"key": "avg_speed", "name": "Avg Speed (Trip)", "unit": "km/h", "device_class": "speed", "icon": "mdi:speedometer-slow"},
     {"key": "last_update", "name": "Last Update", "device_class": "timestamp", "icon": "mdi:clock-outline"},
 ]
 
